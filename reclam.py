@@ -111,9 +111,33 @@ def save_allowed_users(users):
 # ============================================================
 
 async def join_with_retry(app, link):
+    clean_link = link
+    for prefix in ["https://t.me/", "http://t.me/", "t.me/"]:
+        clean_link = clean_link.replace(prefix, "")
+    clean_link = clean_link.split("?")[0]
+    
+    chat_id = None
+    can_read = False
+    
+    try:
+        chat = await app.get_chat(clean_link)
+        chat_id = chat.id
+        async for _ in app.get_chat_history(chat_id, limit=1):
+            can_read = True
+            break
+    except:
+        pass
+
+    if can_read:
+        try:
+            await app.join_chat(clean_link)
+        except:
+            pass
+        return chat_id, True, False
+
     for attempt in range(3):
         try:
-            chat = await app.join_chat(link)
+            chat = await app.join_chat(clean_link)
             return chat.id, True, False
         except FloodWait as e:
             wait_time = e.value if hasattr(e, 'value') else 60
@@ -121,23 +145,14 @@ async def join_with_retry(app, link):
             continue
         except UserAlreadyParticipant:
             try:
-                chat = await app.get_chat(link)
+                chat = await app.get_chat(clean_link)
                 return chat.id, True, False
             except:
                 return None, False, False
         except Exception as e:
             error_str = str(e).lower()
             if any(x in error_str for x in ["inviterequestsent", "privacy", "request to join"]):
-                return None, False, True
-            if "t.me/" in link:
-                clean_link = link.replace("https://t.me/", "").replace("http://t.me/", "").split("?")[0]
-                if not clean_link.startswith("+"):
-                    try:
-                        chat = await app.join_chat(clean_link)
-                        return chat.id, True, False
-                    except:
-                        pass
-            return None, False, False
+                return None, False, True 
     return None, False, False
 
 def calculate_chance(user_data, total_messages):
@@ -224,8 +239,11 @@ async def parse_chat_for_active_users(session_name, target_link, limit=500, max_
             try:
                 chat = await userbot.get_chat(target_link)
                 chat_id = chat.id
-                success = True
-                break
+                async for _ in userbot.get_chat_history(chat_id, limit=1):
+                    success = True
+                    break
+                if success:
+                    break
             except:
                 pass
         if not success:
@@ -262,7 +280,7 @@ async def parse_chat_for_active_users(session_name, target_link, limit=500, max_
                                 admin_ids.add(entity.user.id)
                     break
     except Exception as e:
-        log_error(f"Ошибка триггера админов: {e}")
+        log_error(f"Ошибка триггера админов (возможно нет прав писать): {e}")
 
     if status_msg: await status_msg.edit_text("Анализирую сообщения...")
     users_db = load_json(USERS_DB, {})
@@ -325,7 +343,7 @@ async def parse_chat_for_active_users(session_name, target_link, limit=500, max_
         if status_msg: await status_msg.delete()
     except Exception as e:
         log_error(f"Ошибка парсинга: {e}")
-        if status_msg: await status_msg.edit_text("Ошибка парсинга. Возможно, чат закрыт.")
+        if status_msg: await status_msg.edit_text("Ошибка парсинга. Возможно, чат полностью закрыт.")
 
     await userbot.stop()
     return result
@@ -365,7 +383,12 @@ def run_telegram_bot():
         
         allowed = load_allowed_users()
         if user.id not in allowed and user.id not in ADMIN_IDS:
-            await message.reply(f"У вас нет доступа к боту.\nВаш ID: <code>{user.id}</code>", parse_mode=ParseMode.HTML)
+            await message.reply(
+                f"У вас нет доступа к боту.\nВаш ID: <code>{user.id}</code>\n\n"
+                f"Тут вы можете посмотреть обзор бота: t.me/reclambotik",
+                parse_mode=ParseMode.HTML,
+                disable_web_page_preview=True
+            )
             return
 
         text = get_start_text(user.first_name)
