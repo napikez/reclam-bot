@@ -167,19 +167,18 @@ async def send_results_to_chat(app, result, output_chat_id):
             is_premium = data.get("is_premium", False)
             status_text = "Premium" if is_premium else "Обычный"
             
+            # Делаем кликабельным само имя или юзернейм (жесткий фикс для телеграма)
             if username:
-                user_display = f"@{username}"
-                user_link = f"https://t.me/{username}"
+                user_display = f"<a href=\"https://t.me/{username}\">@{username}</a>"
             else:
                 first_name = data.get("first_name", "Без имени")
-                user_display = f"<b>{first_name}</b>"
-                user_link = f"tg://user?id={uid}"
+                safe_name = first_name.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
+                user_display = f"<a href=\"tg://user?id={uid}\">{safe_name}</a>"
 
             block = (
                 f"{user_display}\n"
                 f"Сообщения: {msg_count} | Шанс: {chance}%\n"
                 f"Статус: {status_text}\n"
-                f"Ссылка: <a href=\"{user_link}\">Написать</a>\n"
                 + "-"*30
             )
             blocks.append(block)
@@ -231,7 +230,6 @@ async def parse_chat_for_active_users(session_name, target_link, limit=500, max_
             await userbot.stop()
             return []
 
-    # Собираем админов стандартным путем
     admin_ids = set()
     admin_usernames = set()
     if success:
@@ -244,7 +242,6 @@ async def parse_chat_for_active_users(session_name, target_link, limit=500, max_
         except:
             pass
 
-    # СБОР АДМИНОВ ЧЕРЕЗ ТРИГГЕР (ИРИС ИЛИ ДРУГИЕ БОТЫ)
     try:
         if status_msg: await status_msg.edit_text("Проверяю список администраторов через бота...")
         trigger_msg = await userbot.send_message(chat_id, "кто админ")
@@ -281,7 +278,6 @@ async def parse_chat_for_active_users(session_name, target_link, limit=500, max_
             
             user = message.from_user
             
-            # Проверяем, является ли пользователь админом по спискам
             if user.id in admin_ids or (user.username and user.username.lower() in admin_usernames):
                 continue
             
@@ -414,7 +410,6 @@ def run_telegram_bot():
 
         asyncio.create_task(run_parsing_task())
 
-    # ===== ИНЛАЙН КНОПКИ =====
     @bot_app.on_callback_query()
     async def callback_handler(client, query: CallbackQuery):
         try:
@@ -434,7 +429,6 @@ def run_telegram_bot():
                 await query.message.edit_text(text, reply_markup=kb, parse_mode=ParseMode.HTML)
 
             elif data == "menu_keep":
-                # Оставляем список результатов, убираем кнопки и отправляем меню новым сообщением
                 try:
                     await query.message.edit_reply_markup(reply_markup=None)
                 except:
@@ -484,7 +478,6 @@ def run_telegram_bot():
             except:
                 pass
 
-    # ===== МАШИНА СОСТОЯНИЙ (АВТОРИЗАЦИЯ) =====
     @bot_app.on_message(filters.text & filters.private)
     async def fsm_handler(client, message):
         user_id = message.from_user.id
