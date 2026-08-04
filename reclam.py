@@ -167,19 +167,22 @@ async def send_results_to_chat(app, result, output_chat_id):
             is_premium = data.get("is_premium", False)
             status_text = "Premium" if is_premium else "Обычный"
             
-            # Делаем кликабельным само имя или юзернейм (жесткий фикс для телеграма)
             if username:
-                user_display = f"<a href=\"https://t.me/{username}\">@{username}</a>"
+                user_display = f"@{username}"
+                user_link = f"https://t.me/{username}"
             else:
-                first_name = data.get("first_name", "Без имени")
-                safe_name = first_name.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
-                user_display = f"<a href=\"tg://user?id={uid}\">{safe_name}</a>"
+                first_name = data.get("first_name")
+                if not first_name: first_name = "Без имени"
+                safe_name = str(first_name).replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
+                user_display = f"{safe_name}"
+                user_link = f"tg://user?id={uid}"
 
             block = (
-                f"{user_display}\n"
-                f"Сообщения: {msg_count} | Шанс: {chance}%\n"
-                f"Статус: {status_text}\n"
-                + "-"*30
+                f"👤 <b>{user_display}</b>\n"
+                f"💬 Сообщения: {msg_count} | 🎯 Шанс: {chance}%\n"
+                f"💎 Статус: {status_text}\n"
+                f"🔗 <a href=\"{user_link}\">Перейти к пользователю</a>\n"
+                + "▬"*15
             )
             blocks.append(block)
 
