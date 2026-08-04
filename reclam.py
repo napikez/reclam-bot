@@ -355,6 +355,7 @@ def run_telegram_bot():
         if user_id in ADMIN_IDS:
             buttons.append([InlineKeyboardButton("Логи", callback_data="logs"), InlineKeyboardButton("Юзеры", callback_data="users")])
             buttons.append([InlineKeyboardButton("➕ Добавить сессию", callback_data="add_session")])
+            buttons.append([InlineKeyboardButton("➕ Добавить юзера", callback_data="add_user"), InlineKeyboardButton("➖ Убрать юзера", callback_data="remove_user")])
         return InlineKeyboardMarkup(buttons)
 
     @bot_app.on_message(filters.command(["start"]))
@@ -451,6 +452,22 @@ def run_telegram_bot():
                 kb = InlineKeyboardMarkup([[InlineKeyboardButton("Отмена", callback_data="menu")]])
                 await query.message.edit_text("<b>Добавление новой сессии</b>\n\nВведите номер телефона (в формате +79991234567):", reply_markup=kb, parse_mode=ParseMode.HTML)
                 
+            elif data == "add_user":
+                if user_id not in ADMIN_IDS:
+                    await query.answer("Нет доступа", show_alert=True)
+                    return
+                auth_steps[user_id] = {"step": "wait_add_user"}
+                kb = InlineKeyboardMarkup([[InlineKeyboardButton("Отмена", callback_data="menu")]])
+                await query.message.edit_text("<b>Добавление пользователя</b>\n\nВведите ID пользователя (только цифры):", reply_markup=kb, parse_mode=ParseMode.HTML)
+                
+            elif data == "remove_user":
+                if user_id not in ADMIN_IDS:
+                    await query.answer("Нет доступа", show_alert=True)
+                    return
+                auth_steps[user_id] = {"step": "wait_remove_user"}
+                kb = InlineKeyboardMarkup([[InlineKeyboardButton("Отмена", callback_data="menu")]])
+                await query.message.edit_text("<b>Удаление пользователя</b>\n\nВведите ID пользователя (только цифры):", reply_markup=kb, parse_mode=ParseMode.HTML)
+
             elif data == "help":
                 help_text = (
                     "Команды (нажми, чтобы скопировать):\n"
@@ -537,6 +554,36 @@ def run_telegram_bot():
                 await message.reply(f"Неверный пароль: <code>{e}</code>", reply_markup=kb, parse_mode=ParseMode.HTML)
                 await new_client.disconnect()
                 del auth_steps[user_id]
+                
+        elif step == "wait_add_user":
+            try:
+                new_user = int(message.text.strip())
+                allowed = load_allowed_users()
+                if new_user not in allowed:
+                    allowed.append(new_user)
+                    save_allowed_users(allowed)
+                    await message.reply(f"✅ Пользователь <code>{new_user}</code> успешно добавлен в белый список.", reply_markup=kb, parse_mode=ParseMode.HTML)
+                    add_bot_log(f"Выдан доступ ID: {new_user}")
+                else:
+                    await message.reply("У этого пользователя уже есть доступ.", reply_markup=kb)
+                del auth_steps[user_id]
+            except ValueError:
+                await message.reply("ID должен быть числом! Попробуйте еще раз или нажмите Отмена.", reply_markup=kb)
+                
+        elif step == "wait_remove_user":
+            try:
+                target_user = int(message.text.strip())
+                allowed = load_allowed_users()
+                if target_user in allowed:
+                    allowed.remove(target_user)
+                    save_allowed_users(allowed)
+                    await message.reply(f"❌ Доступ для пользователя <code>{target_user}</code> успешно закрыт.", reply_markup=kb, parse_mode=ParseMode.HTML)
+                    add_bot_log(f"Забран доступ у ID: {target_user}")
+                else:
+                    await message.reply("Этого пользователя и так нет в списке.", reply_markup=kb)
+                del auth_steps[user_id]
+            except ValueError:
+                await message.reply("ID должен быть числом! Попробуйте еще раз или нажмите Отмена.", reply_markup=kb)
 
     async def finalize_session(user_id, state, message):
         new_client = state["client"]
