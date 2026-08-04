@@ -60,8 +60,8 @@ ERROR_LOG = "error.log"
 START_GIF_URL = os.getenv("START_GIF_URL", "https://i.postimg.cc/Y0z1tvpv/pinnsaver-c4f2378bff1a8783e55571f6099484da.gif")
 
 bot_logs = []
-active_sessions = set()  # Отслеживание занятых сессий
-auth_steps = {}  # FSM для добавления сессий {user_id: {step, client, phone, hash, name}}
+active_sessions = set()  
+auth_steps = {}  
 
 def add_bot_log(message):
     timestamp = time.strftime('%Y-%m-%d %H:%M:%S')
@@ -207,7 +207,7 @@ async def parse_chat_for_active_users(session_name, target_link, limit=500, max_
         if status_msg: await status_msg.edit_text(f"Ошибка запуска сессии <code>{session_name}</code>:\n{e}", parse_mode=ParseMode.HTML)
         return []
 
-    if status_msg: await status_msg.edit_text(f"Подключаюсь к чату... (Использую сессию: {session_name})")
+    if status_msg: await status_msg.edit_text(f"Подключаюсь к чату... (Сессия: {session_name})")
     chat_id, success, pending = await join_with_retry(userbot, target_link)
     
     if pending:
@@ -358,7 +358,6 @@ def run_telegram_bot():
             await message.reply("Пример: <code>/pars https://t.me/durov 20000 100</code>", parse_mode=ParseMode.HTML)
             return
 
-        # Ищем свободную сессию
         sessions_dict = load_sessions()
         available_sessions = [s for s in sessions_dict.keys() if s not in active_sessions]
         
@@ -367,7 +366,7 @@ def run_telegram_bot():
             return
             
         session_name = available_sessions[0]
-        active_sessions.add(session_name) # Занимаем сессию
+        active_sessions.add(session_name)
         
         target_link = args[1]
         limit = int(args[2]) if len(args) >= 3 else 20000
@@ -380,42 +379,72 @@ def run_telegram_bot():
             try:
                 await parse_chat_for_active_users(session_name, target_link, limit, max_users, status_msg, client, user.id)
             finally:
-                active_sessions.remove(session_name) # Освобождаем сессию в любом случае
+                active_sessions.remove(session_name)
 
         asyncio.create_task(run_parsing_task())
 
-    # ===== ИНЛАЙН КНОПКИ =====
+    # ===== ИНЛАЙН КНОПКИ (ИСПРАВЛЕНО ЗАВИСАНИЕ) =====
     @bot_app.on_callback_query()
     async def callback_handler(client, query: CallbackQuery):
-        user_id = query.from_user.id
-        allowed = load_allowed_users()
-        
-        if user_id not in allowed and user_id not in ADMIN_IDS:
-            await query.answer("Нет доступа!", show_alert=True)
-            return
-
-        if query.data == "menu":
-            if user_id in auth_steps: del auth_steps[user_id]
-            text = get_start_text(query.from_user.first_name)
-            kb = get_start_keyboard(user_id)
-            await query.message.edit_text(text, reply_markup=kb, parse_mode=ParseMode.HTML)
+        try:
+            user_id = query.from_user.id
+            allowed = load_allowed_users()
             
-        elif query.data == "add_session":
-            if user_id not in ADMIN_IDS:
-                await query.answer("Нет доступа", show_alert=True)
+            if user_id not in allowed and user_id not in ADMIN_IDS:
+                await query.answer("Нет доступа!", show_alert=True)
                 return
-            auth_steps[user_id] = {"step": "phone"}
-            kb = InlineKeyboardMarkup([[InlineKeyboardButton("Отмена", callback_data="menu")]])
-            await query.message.edit_text("<b>Добавление новой сессии</b>\n\nВведите номер телефона (в формате +79991234567):", reply_markup=kb, parse_mode=ParseMode.HTML)
-            
-        # ... (здесь остались help, logs, users как в прошлом коде)
+
+            if query.data == "menu":
+                if user_id in auth_steps: del auth_steps[user_id]
+                text = get_start_text(query.from_user.first_name)
+                kb = get_start_keyboard(user_id)
+                await query.message.edit_text(text, reply_markup=kb, parse_mode=ParseMode.HTML)
+                
+            elif query.data == "add_session":
+                if user_id not in ADMIN_IDS:
+                    await query.answer("Нет доступа", show_alert=True)
+                    return
+                auth_steps[user_id] = {"step": "phone"}
+                kb = InlineKeyboardMarkup([[InlineKeyboardButton("Отмена", callback_data="menu")]])
+                await query.message.edit_text("<b>Добавление новой сессии</b>\n\nВведите номер телефона (в формате +79991234567):", reply_markup=kb, parse_mode=ParseMode.HTML)
+                
+            elif query.data == "help":
+                help_text = (
+                    "Команды (нажми, чтобы скопировать):\n"
+                    "<code>/pars https://t.me/название_канала</code> — обычный парсинг.\n"
+                    "<code>/pars https://t.me/название_канала 300 20</code> — с настройками."
+                )
+                kb = InlineKeyboardMarkup([[InlineKeyboardButton("В меню", callback_data="menu")]])
+                await query.message.edit_text(help_text, reply_markup=kb, parse_mode=ParseMode.HTML)
+                
+            elif query.data == "logs":
+                if user_id not in ADMIN_IDS:
+                    await query.answer("Нет доступа", show_alert=True)
+                    return
+                logs_text = "\n".join(bot_logs[-15:]) if bot_logs else "Логов пока нет"
+                kb = InlineKeyboardMarkup([[InlineKeyboardButton("В меню", callback_data="menu")]])
+                await query.message.edit_text(f"<b>Последние логи:</b>\n\n<code>{logs_text}</code>", reply_markup=kb, parse_mode=ParseMode.HTML)
+                
+            elif query.data == "users":
+                if user_id not in ADMIN_IDS:
+                    await query.answer("Нет доступа", show_alert=True)
+                    return
+                users_list = "\n".join([f"• <code>{u}</code>" for u in allowed])
+                kb = InlineKeyboardMarkup([[InlineKeyboardButton("В меню", callback_data="menu")]])
+                await query.message.edit_text(f"<b>Пользователи с доступом:</b>\n\n{users_list}", reply_markup=kb, parse_mode=ParseMode.HTML)
+        finally:
+            # Снимаем "часики" загрузки с кнопки при любом исходе
+            try:
+                await query.answer()
+            except:
+                pass
 
     # ===== МАШИНА СОСТОЯНИЙ (АВТОРИЗАЦИЯ) =====
     @bot_app.on_message(filters.text & filters.private)
     async def fsm_handler(client, message):
         user_id = message.from_user.id
         if user_id not in auth_steps:
-            return # Если не в процессе авторизации - игнорируем (чтобы работали команды)
+            return 
 
         state = auth_steps[user_id]
         step = state["step"]
@@ -448,7 +477,6 @@ def run_telegram_bot():
             new_client = state["client"]
             try:
                 await new_client.sign_in(state["phone"], state["hash"], code)
-                # Если прошло успешно, значит нет 2FA
                 await finalize_session(user_id, state, message)
             except SessionPasswordNeeded:
                 auth_steps[user_id]["step"] = "password"
@@ -473,7 +501,6 @@ def run_telegram_bot():
         new_client = state["client"]
         session_name = state["name"]
         
-        # Сохраняем сессию
         sessions = load_sessions()
         sessions[session_name] = {"phone": state["phone"], "type": "парсинг"}
         save_json(SESSIONS_FILE, sessions)
