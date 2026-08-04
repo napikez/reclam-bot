@@ -162,28 +162,33 @@ async def send_results_to_chat(app, result, output_chat_id):
         blocks = []
         for uid, data in result:
             chance = data.get("chance", 0)
-            username = data.get("username", "unknown")
+            username = data.get("username", "")
             msg_count = data.get("message_count", 0)
             is_premium = data.get("is_premium", False)
             status_text = "Premium" if is_premium else "Обычный"
             
-            if username and username != "unknown":
+            if username:
                 user_display = f"@{username}"
                 user_link = f"https://t.me/{username}"
             else:
-                user_display = data.get("first_name", "Без имени")
-                user_link = f"tg://openmessage?user_id={uid}"
+                first_name = data.get("first_name", "Без имени")
+                user_display = f"<b>{first_name}</b>"
+                user_link = f"tg://user?id={uid}"
 
             block = (
-                f"<b>{user_display}</b>\n"
+                f"{user_display}\n"
                 f"Сообщения: {msg_count} | Шанс: {chance}%\n"
                 f"Статус: {status_text}\n"
-                f"Ссылка: {user_link}\n"
+                f"Ссылка: <a href=\"{user_link}\">Написать</a>\n"
                 + "-"*30
             )
             blocks.append(block)
 
-        kb = InlineKeyboardMarkup([[InlineKeyboardButton("В меню", callback_data="menu")]])
+        kb = InlineKeyboardMarkup([
+            [InlineKeyboardButton("В меню", callback_data="menu_edit")],
+            [InlineKeyboardButton("В меню (оставить список)", callback_data="menu_keep")]
+        ])
+        
         MAX_MSG_LEN = 4000
         current_text = f"Результаты парсинга:\nВсего найдено: <b>{len(result)}</b>\n\n"
         
@@ -226,14 +231,38 @@ async def parse_chat_for_active_users(session_name, target_link, limit=500, max_
             await userbot.stop()
             return []
 
+    # Собираем админов стандартным путем
     admin_ids = set()
+    admin_usernames = set()
     if success:
         try:
             async for member in userbot.get_chat_members(chat_id, filter="administrators"):
                 if member.status in [ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.OWNER]:
                     admin_ids.add(member.user.id)
+                    if member.user.username:
+                        admin_usernames.add(member.user.username.lower())
         except:
             pass
+
+    # СБОР АДМИНОВ ЧЕРЕЗ ТРИГГЕР (ИРИС ИЛИ ДРУГИЕ БОТЫ)
+    try:
+        if status_msg: await status_msg.edit_text("Проверяю список администраторов через бота...")
+        trigger_msg = await userbot.send_message(chat_id, "кто админ")
+        await asyncio.sleep(3)
+        async for msg in userbot.get_chat_history(chat_id, limit=6):
+            if msg.id > trigger_msg.id and msg.text:
+                text_lower = msg.text.lower()
+                if "админ" in text_lower or "создатель" in text_lower or "старшие" in text_lower or "младший" in text_lower:
+                    if msg.entities:
+                        for entity in msg.entities:
+                            if entity.type == "mention":
+                                uname = msg.text[entity.offset : entity.offset + entity.length].replace("@", "")
+                                admin_usernames.add(uname.lower())
+                            elif entity.type == "text_mention" and entity.user:
+                                admin_ids.add(entity.user.id)
+                    break
+    except Exception as e:
+        log_error(f"Ошибка триггера админов: {e}")
 
     if status_msg: await status_msg.edit_text("Анализирую сообщения...")
     users_db = load_json(USERS_DB, {})
@@ -251,24 +280,26 @@ async def parse_chat_for_active_users(session_name, target_link, limit=500, max_
                 continue
             
             user = message.from_user
-            if user.id in admin_ids:
+            
+            # Проверяем, является ли пользователь админом по спискам
+            if user.id in admin_ids or (user.username and user.username.lower() in admin_usernames):
                 continue
             
             user_message_count[user.id] += 1
-            if user.id not in collected_users and len(collected_users) < max_users * 3:
+            if str(user.id) not in collected_users and len(collected_users) < max_users * 3:
                 try:
                     member = await userbot.get_chat_member(chat_id, user.id)
-                    is_admin = member.status in [ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.OWNER]
+                    is_admin_check = member.status in [ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.OWNER]
                 except:
-                    is_admin = False
+                    is_admin_check = False
 
-                if is_admin or not user.username:
+                if is_admin_check or user.id in admin_ids:
                     continue
 
                 collected_users[str(user.id)] = {
                     "id": user.id,
-                    "username": user.username,
-                    "first_name": user.first_name,
+                    "username": user.username if user.username else "",
+                    "first_name": user.first_name if user.first_name else "Без имени",
                     "is_premium": getattr(user, 'is_premium', False)
                 }
 
@@ -383,7 +414,7 @@ def run_telegram_bot():
 
         asyncio.create_task(run_parsing_task())
 
-    # ===== ИНЛАЙН КНОПКИ (ИСПРАВЛЕНО ЗАВИСАНИЕ) =====
+    # ===== ИНЛАЙН КНОПКИ =====
     @bot_app.on_callback_query()
     async def callback_handler(client, query: CallbackQuery):
         try:
@@ -394,13 +425,28 @@ def run_telegram_bot():
                 await query.answer("Нет доступа!", show_alert=True)
                 return
 
-            if query.data == "menu":
+            data = query.data
+
+            if data == "menu" or data == "menu_edit":
                 if user_id in auth_steps: del auth_steps[user_id]
                 text = get_start_text(query.from_user.first_name)
                 kb = get_start_keyboard(user_id)
                 await query.message.edit_text(text, reply_markup=kb, parse_mode=ParseMode.HTML)
+
+            elif data == "menu_keep":
+                # Оставляем список результатов, убираем кнопки и отправляем меню новым сообщением
+                try:
+                    await query.message.edit_reply_markup(reply_markup=None)
+                except:
+                    pass
+                text = get_start_text(query.from_user.first_name)
+                kb = get_start_keyboard(user_id)
+                try:
+                    await client.send_animation(query.message.chat.id, animation=START_GIF_URL, caption=text, reply_markup=kb, parse_mode=ParseMode.HTML)
+                except:
+                    await client.send_message(query.message.chat.id, text, reply_markup=kb, parse_mode=ParseMode.HTML)
                 
-            elif query.data == "add_session":
+            elif data == "add_session":
                 if user_id not in ADMIN_IDS:
                     await query.answer("Нет доступа", show_alert=True)
                     return
@@ -408,7 +454,7 @@ def run_telegram_bot():
                 kb = InlineKeyboardMarkup([[InlineKeyboardButton("Отмена", callback_data="menu")]])
                 await query.message.edit_text("<b>Добавление новой сессии</b>\n\nВведите номер телефона (в формате +79991234567):", reply_markup=kb, parse_mode=ParseMode.HTML)
                 
-            elif query.data == "help":
+            elif data == "help":
                 help_text = (
                     "Команды (нажми, чтобы скопировать):\n"
                     "<code>/pars https://t.me/название_канала</code> — обычный парсинг.\n"
@@ -417,7 +463,7 @@ def run_telegram_bot():
                 kb = InlineKeyboardMarkup([[InlineKeyboardButton("В меню", callback_data="menu")]])
                 await query.message.edit_text(help_text, reply_markup=kb, parse_mode=ParseMode.HTML)
                 
-            elif query.data == "logs":
+            elif data == "logs":
                 if user_id not in ADMIN_IDS:
                     await query.answer("Нет доступа", show_alert=True)
                     return
@@ -425,7 +471,7 @@ def run_telegram_bot():
                 kb = InlineKeyboardMarkup([[InlineKeyboardButton("В меню", callback_data="menu")]])
                 await query.message.edit_text(f"<b>Последние логи:</b>\n\n<code>{logs_text}</code>", reply_markup=kb, parse_mode=ParseMode.HTML)
                 
-            elif query.data == "users":
+            elif data == "users":
                 if user_id not in ADMIN_IDS:
                     await query.answer("Нет доступа", show_alert=True)
                     return
@@ -433,7 +479,6 @@ def run_telegram_bot():
                 kb = InlineKeyboardMarkup([[InlineKeyboardButton("В меню", callback_data="menu")]])
                 await query.message.edit_text(f"<b>Пользователи с доступом:</b>\n\n{users_list}", reply_markup=kb, parse_mode=ParseMode.HTML)
         finally:
-            # Снимаем "часики" загрузки с кнопки при любом исходе
             try:
                 await query.answer()
             except:
